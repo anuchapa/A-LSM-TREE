@@ -1,23 +1,48 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"myLSMTree"
 )
 
 func main() {
+	// numbers := []uint32{15, 6, 9, 2, 8, 16, 19, 20, 100, 0}
+	// buf := make([][]byte, len(numbers))
+	// for i, n := range numbers {
+	// 	buf[i] = binary.BigEndian.AppendUint32(buf[i], n)
+	// }
+	// h := (*myLSMTree.BytesHeap)(&buf)
+	
+	// myLSMTree.HeapInit(h)
+	// for _, n := range *h {
+	// 	fmt.Printf("%v ",binary.BigEndian.Uint32(n))
+	// }
+
+	// fmt.Println()
+
+	// myLSMTree.Push(h,[]byte{0, 0, 0, 111})
+	// for _, n := range *h {
+	// 	fmt.Printf("%v ",binary.BigEndian.Uint32(n))
+	// }
+
+	// for i := 0; i < len(numbers); i++ {
+
+	// 	fmt.Println(binary.BigEndian.Uint32(myLSMTree.Pop(h).([]byte)), h.Len())
+	// }
+
 	table := myLSMTree.NewTable("test")
-	table.Compact()
-	// for i := 0; i < 200000; i++ {
+	//table.Compact()
+	// for i := 0; i < 300000; i++ {
 	// 	buf := make([]byte, 4)
 	// 	binary.BigEndian.PutUint32(buf, uint32(i))
 	// 	table.Insert(buf, []byte(fmt.Sprintf("value%v", i)))
 	// }
 
-	// buf := make([]byte, 4)
-	// binary.BigEndian.PutUint32(buf, uint32(85198))
-	// result := table.Get(buf)
-	// fmt.Println(result)
+	buf := make([]byte, 4)
+	binary.BigEndian.PutUint32(buf, uint32(85198))
+	result := table.Get(buf)
+	fmt.Println(result)
 
 	//time.Sleep(5*time.Second)
 	//var result []byte
