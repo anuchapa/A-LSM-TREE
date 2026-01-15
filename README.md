@@ -1,21 +1,33 @@
+
 # MyLSM-Tree: A Journey into Storage Internals
-This is Key-Value Storage implementation practicing LSM-Tree is high-write database backbone by Golang from the ground for learning about How how database work in low-level
 
-# MyLSM-Tree 
-1. **MEMTabel**: Data structure place in memory to  recieve new adding data.
-2. **SSTable**: File on disk that store data from MEMTabel in sorted order. when MEMTabel reaches to some size threshold, it is flushed to disk.
-3. **Compaction**:When a number of SSTables grow. We have to merge small SSTables to large one. The data is merged based on the key and the latest value.
-4. **Read processes**: Reading from MEMTable first if it not found then we find at latest SSTable and so on. 
+A high-performance Key-Value storage engine implementation based on the **Log-Structured Merge-Tree (LSM-Tree)** architecture. Built from scratch in Go to explore low-level database internals, memory management, and concurrent systems.
 
-# Lessons Learned
+## System Architecture
 
-## Skip List 
-**Skip List** is a probabilistic data structure designed to allow efficient search, insertion and deletion operation in sorted list. It is alternative balance tree but simpler to implementation. 
-    
+1. **MemTable**: In-memory data structure (Skip List) for fast, synchronous writes.
+2. **Immutable MemTable**: A transition layer where full MemTables wait to be flushed as background tasks.
+3. **SSTable (Sorted String Table)**: Persistent on-disk files storing sorted key-value pairs with a built-in Sparse Index.
+4. **Multi-level Hierarchy**: Supports tiered storage levels (L0, L1, ...) to balance write amplification and read performance.
 
-## **Byounde simple merging:** 
-    Initially, I desided use standard 2-way merge for compaction. However merging only 2 files at time would make compection process ineffient as the number of SSTAble files grow , I implemented an N-way Merge to process all SSTables in a level simultaneously.
+## Key Features
 
-- **Efficient Multi-file Merging with Min-Heap:**To implemented N-way merging, I used a **Min-Heap** to track current keys from all active SSTables. This approch allow to find the minimum key across K file in O(log K). resulting in overall is O(N log K), This sinificantly optimizes and speed up compaction process
+### 1. Hybrid Concurrency Model
+To achieve high throughput while maintaining consistency, I implemented a hybrid approach:
+- **Immediate Visibility**: Writes are applied to the MemTable synchronously, ensuring `Get` requests always see the latest data.
+- **Worker-Pool Pattern**: Heavy operations like flushing to disk and compaction are handled by dedicated background Goroutines via channels.
 
+### 2. Efficient N-Way Merge
+Initially using a standard 2-way merge, I optimized the compaction process by implementing an **N-Way Merge**:
+- Uses a **Min-Heap** to track the smallest keys across multiple SSTables.
+- Reduces complexity to **O(N log K)**, where K is the number of files being merged.
+- Significantly speeds up Level-0 to Level-1 compaction.
 
+### 3. Sparse Indexing & Binary Search
+Every SSTable includes an index block at the footer. Instead of scanning the entire file, the engine performs a **Binary Search** on the index to jump to the correct data block, minimizing Disk I/O.
+
+## Lessons Learned
+
+- **Concurrency Control**: Deep dived into Go's concurrency primitives (`sync.RWMutex`, `channels`). Solved complex race conditions between background flushes and foreground reads.
+- **Disk I/O Optimization**: Learned how to structure binary data in files, manage file offsets, and use buffered writes to minimize system call overhead.
+- **Probabilistic Data Structures**: Implemented **Skip List** as an alternative to self-balancing trees for its simplicity and efficiency in concurrent environments.

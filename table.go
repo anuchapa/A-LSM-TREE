@@ -36,7 +36,7 @@ func NewTable(name string) *logicalTable {
 		if err != nil {
 			fmt.Println(err)
 		}
-		tree.ssTables = append(tree.ssTables, make([]*ssTableStruct, 1))
+		tree.ssTables = append(tree.ssTables, make([]*ssTableStruct, 0, 1))
 		tree.fileCount = append(tree.fileCount, 0)
 		tree.ssTables[level] = make([]*ssTableStruct, 0)
 		for _, sst := range ssTFiles {
@@ -51,18 +51,23 @@ func NewTable(name string) *logicalTable {
 		}
 	}
 	table := &logicalTable{name: name, tree: tree}
-	go tree.insert(100000)
+	go tree.insertWorker()
+	go tree.compactWorker()
+	go tree.flushWorker()
 	return table
 }
 
 func (t *logicalTable) Insert(key, value []byte) {
-	t.tree.insertC <- DataModel{key: key, value: value}
+	//go t.tree.Insert(DataModel{key: key, value: value})
+	req  := DataModel{key: key, value: value}
+	t.tree.memTables.Put(req.key, req.value)
+	t.tree.insertC <- req
 }
 
 func (t *logicalTable) Get(key []byte) []byte {
-	return t.tree.get(key)
+	return t.tree.Get(key)
 }
 
 func (t *logicalTable) Compact() {
-	t.tree.compactionStart()
+	t.tree.nWayMerge(0, 4)
 }

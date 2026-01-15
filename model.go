@@ -1,9 +1,8 @@
 package myLSMTree
 
-import(
+import (
 	"os"
 )
-
 
 type DataModel struct {
 	key   []byte
@@ -40,4 +39,43 @@ func (w *writeStruct) Write(key, value []byte) {
 		*w.firstKey = make([]byte, len(key[4:]))
 		copy(*w.firstKey, key[4:])
 	}
+}
+
+func (w *writeStruct) WriteFooter() {
+	buf := make([]byte, 4)
+
+	putUint32(buf, uint32(len(*w.firstKey)))
+	w.tempFile.Write(buf)
+	w.tempFile.Write(*w.firstKey)
+
+	putUint32(buf, uint32(len(*w.lastKey)))
+	w.tempFile.Write(buf)
+	w.tempFile.Write(*w.lastKey)
+
+	w.tempFile.Write(*w.indexes)
+
+	putUint32(*w.offsetBuf, uint32(*w.offset))
+	w.tempFile.Write(*w.offsetBuf)
+
+	w.tempFile.Sync()
+}
+
+func (w *writeStruct) Reset() {
+	*w.offset = 0
+	*w.firstKey = nil
+	*w.lastKey = nil
+}
+
+func (w *writeStruct) SwitchFile(newFile *os.File) {
+	w.WriteFooter()
+	w.tempFile.Close()
+	w.Reset()
+	w.tempFile = newFile
+}
+
+func (w *writeStruct) size() int {
+	if *w.firstKey == nil || *w.lastKey == nil {
+		return 0
+	}
+	return *w.offset + len(*w.block) + len(*w.indexes) + len(*w.firstKey) + len(*w.lastKey) + len(*w.offsetBuf)
 }

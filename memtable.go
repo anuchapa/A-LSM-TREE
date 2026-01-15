@@ -9,9 +9,9 @@ import (
 )
 
 type memTableStruct struct {
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	skiplist *skiplist.SkipList[[]byte, []byte]
-	size     int32
+	size     int
 }
 
 func newMemTable() *memTableStruct {
@@ -21,26 +21,26 @@ func newMemTable() *memTableStruct {
 	}
 }
 
-func (m *memTableStruct) put(key []byte, value []byte) {
+func (m *memTableStruct) Put(key []byte, value []byte) {
 	m.mu.Lock()
 	m.skiplist.Insert(key, value)
+	m.size+= len(key)+len(value)
 	m.mu.Unlock()
 }
 
-func (m *memTableStruct) get(key []byte) ([]byte, error) {
-	m.mu.Lock()
+func (m *memTableStruct) Get(key []byte) ([]byte, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
 	if m.skiplist.Size() == 0 {
-		m.mu.Unlock()
 		return nil, fmt.Errorf("Memtable size: 0")
 	}
 
 	node := m.skiplist.Find(key)
 	if node == nil {
-		m.mu.Unlock()
 		return nil, fmt.Errorf("This key is not found from RAM")
 	} else {
 		value := node.Value
-		m.mu.Unlock()
 		return value, nil
 	}
 }

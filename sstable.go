@@ -1,6 +1,6 @@
 package myLSMTree
 
-import(
+import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
@@ -16,8 +16,9 @@ type ssTableStruct struct {
 	level    int
 	firstKey []byte
 	lastKey  []byte
-	dataTemp []*dataBlock
 	indexes  []*indexBlock
+	refCount int
+	obsolete bool
 }
 
 func newSSTable(path string, level int) *ssTableStruct {
@@ -80,25 +81,24 @@ func newSSTable(path string, level int) *ssTableStruct {
 	}
 }
 
-func binarySearch(indexes []*indexBlock, key []byte) int {
-	var target int
-	left := 0
-	right := len(indexes) - 1
-	for left <= right {
-		mid := left + (right-left)/2
-		if bytes.Compare(key, indexes[mid].key) >= 0 {
-			target = mid
-			left = mid + 1
-		} else {
-			right = mid - 1
-		}
+func (s *ssTableStruct) CloseAndRemove() {
+	if s.refCount == 0 && s.obsolete {
+		s.file.Close()
+		os.Remove(s.path)
 	}
-	return target
 }
 
-func (s *ssTableStruct) get(key []byte) ([]byte, error) {
+func (s *ssTableStruct) Get(key []byte) ([]byte, error) {
 	//fmt.Println(s.firstKey, s.lastKey)
+	s.mu.Lock()
+	s.refCount++
+	s.mu.Unlock()
+
 	if bytes.Compare(key, s.firstKey) == -1 || bytes.Compare(key, s.lastKey) == 1 {
+		s.mu.Lock()
+		s.refCount--
+		s.CloseAndRemove()
+		s.mu.Unlock()
 		return nil, fmt.Errorf("This key is not in this file.")
 	}
 
@@ -109,8 +109,14 @@ func (s *ssTableStruct) get(key []byte) ([]byte, error) {
 	target := binarySearch(indexes, key)
 	offset = indexes[target].offset
 	buf := make([]byte, 4)
+	var endOffset int64
+	if target < len(indexes)-1 {
+		endOffset = indexes[target+1].offset
+	} else {
+		endOffset = int64(getFooter(file))
+	}
 
-	for {
+	for offset < endOffset {
 		_, err := s.file.ReadAt(buf, offset)
 		if err == io.EOF {
 			break
@@ -155,9 +161,17 @@ func (s *ssTableStruct) get(key []byte) ([]byte, error) {
 		offset += int64(valueLen)
 
 		if bytes.Equal(bufKey, key) {
+			s.mu.Lock()
+			s.refCount--
+			s.CloseAndRemove()
+			s.mu.Unlock()
 			return bufValue, nil
 		}
 	}
+	s.mu.Lock()
+	s.refCount--
+	s.CloseAndRemove()
+	s.mu.Unlock()
 	return nil, fmt.Errorf("This key is not found from disk")
 
 }
