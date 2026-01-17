@@ -1,7 +1,7 @@
 
 # MyLSM-Tree: A Journey into Storage Internals
 
-A high-performance Key-Value storage engine implementation based on the **Log-Structured Merge-Tree (LSM-Tree)** architecture. Built from scratch in Go to explore low-level database internals, memory management, and concurrent systems.
+A high-performance Key-Value storage implementation based on the **Log-Structured Merge-Tree (LSM-Tree)** architecture. Built from scratch in Go to explore low-level database internals, memory management, and concurrent systems.
 
 ## System Architecture
 
@@ -31,3 +31,16 @@ Every SSTable includes an index block at the footer. Instead of scanning the ent
 - **Concurrency Control**: Deep dived into Go's concurrency primitives (`sync.RWMutex`, `channels`). Solved complex race conditions between background flushes and foreground reads.
 - **Disk I/O Optimization**: Learned how to structure binary data in files, manage file offsets, and use buffered writes to minimize system call overhead.
 - **Probabilistic Data Structures**: Implemented **Skip List** as an alternative to self-balancing trees for its simplicity and efficiency in concurrent environments.
+
+- **Serial vs. Parallel I/O Performance**: Transitioning from parallel go func() flushes to sequential/serial flushing resulted in a 4x performance boost.
+**Reasoning**: Parallel I/O on a single disk controller causes high contention and context switching. By serializing the flush process, we maximized sequential write throughput and reduced total execution time from 267s down to 64s for a 10M record batch.
+
+
+# Performance & Reliability Updates (2026-01-17)
+## Benchmarking Results
+Conducted stress testing with 10 million records on a Windows environment (12th Gen Intel Core i3-1215U).
+
+| Test Case               | Performance (ns/op) | Throughput (approx.) | Notes                                                     |
+| ----------------------- | ------------------- | -------------------- | --------------------------------------------------------- |
+| In-Memory (Async)       | ~1,000 ns/op        | ~1,000,000 ops/sec   | Measured ingestion into MemTable before full persistence. |
+| Full Persistence (Sync) | ~21,900 ns/op       | ~45,600 ops/sec      | Total cost including MemTable flush and L0–L7 compaction. |

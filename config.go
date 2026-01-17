@@ -3,6 +3,7 @@ package myLSMTree
 import "time"
 
 const (
+	DefaultRootPath        = "./db_table/"
 	DefaultMaxL0Files      = 4
 	DefaultLevelMultiplier = 10
 	DefaultMaxLevel        = 7
@@ -12,6 +13,7 @@ const (
 )
 
 type Configuration struct {
+	RootPath           string
 	MaxL0Files         int
 	LevelMultiplier    int
 	MaxLevel           int
@@ -22,6 +24,7 @@ type Configuration struct {
 
 func DefaultConfiguration() Configuration {
 	return Configuration{
+		RootPath:           DefaultRootPath,
 		MaxL0Files:         DefaultMaxL0Files,
 		LevelMultiplier:    DefaultLevelMultiplier,
 		MaxLevel:           DefaultMaxLevel,

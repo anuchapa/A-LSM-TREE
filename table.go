@@ -1,9 +1,6 @@
 package myLSMTree
 
-import (
-	"fmt"
-	"os"
-)
+import "fmt"
 
 type logicalTable struct {
 	tree     *LSMTree
@@ -12,54 +9,21 @@ type logicalTable struct {
 }
 
 func NewTable(name string) *logicalTable {
-	rootPath := "./db_table/" + name + "/sstable/"
-	var levelDirs []os.DirEntry
-	if _, err := os.Stat(rootPath); err == nil {
-		fmt.Println("Folder already exists!")
-		levelDirs, err = os.ReadDir(rootPath)
-		if err != nil {
-			fmt.Println(err)
-		}
-
-	} else if os.IsNotExist(err) {
-		err := os.MkdirAll(rootPath, 0744)
-		if err != nil {
-			fmt.Println("Creating folder unsucess:", err)
-			return nil
-		}
-	}
-	tree := newLSMTree(rootPath)
-
-	for level, lvDir := range levelDirs {
-		sstDir := rootPath + lvDir.Name() + "/"
-		ssTFiles, err := os.ReadDir(sstDir)
-		if err != nil {
-			fmt.Println(err)
-		}
-		tree.ssTables = append(tree.ssTables, make([]*ssTableStruct, 0, 1))
-		tree.fileCount = append(tree.fileCount, 0)
-		tree.ssTables[level] = make([]*ssTableStruct, 0)
-		for _, sst := range ssTFiles {
-			filePath := sstDir + sst.Name()
-			ssTable := newSSTable(filePath, level)
-			if ssTable == nil {
-				fmt.Printf("Skip corrupt file %s", filePath)
-				continue
-			}
-			tree.ssTables[level] = append(tree.ssTables[level], ssTable)
-			tree.fileCount[level]++
-		}
-	}
+	tree := newLSMTree(name)
 	table := &logicalTable{name: name, tree: tree}
-	go tree.insertWorker()
-	go tree.compactWorker()
-	go tree.flushWorker()
 	return table
 }
 
 func (t *logicalTable) Insert(key, value []byte) {
 	//go t.tree.Insert(DataModel{key: key, value: value})
-	req  := DataModel{key: key, value: value}
+	req := DataModel{key: key, value: value}
+	t.tree.memTables.Put(req.key, req.value)
+	t.tree.insertC <- req
+}
+
+func (t *logicalTable) Remove(key []byte) {
+	//go t.tree.Insert(DataModel{key: key, value: value})
+	req := DataModel{key: key, value: []byte(delteStr)}
 	t.tree.memTables.Put(req.key, req.value)
 	t.tree.insertC <- req
 }
@@ -68,6 +32,24 @@ func (t *logicalTable) Get(key []byte) []byte {
 	return t.tree.Get(key)
 }
 
-func (t *logicalTable) Compact() {
-	t.tree.nWayMerge(0, 4)
+func (t *logicalTable) Compact(level int) {
+	if len(t.tree.ssTables) <= level {
+		fmt.Printf("This level doesn't have a file")
+	}
+	count := len(t.tree.ssTables[level])
+	t.tree.nWayMerge(level,count)
+}
+
+func (t *logicalTable) Flush(file string) {
+	t.tree.immuMemtable = append(t.tree.immuMemtable, t.tree.memTables)
+	t.tree.flush(t.tree.immuMemtable[0], t.tree.path+"L0/"+file+",sst")
+}
+
+func (t *logicalTable) SetConfig(conf Configuration) {
+	t.tree.conf = conf
+}
+
+
+func (t *logicalTable) Close() {
+	t.tree.close()
 }
