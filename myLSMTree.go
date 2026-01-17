@@ -8,34 +8,100 @@ import (
 	"sync"
 )
 
+const delteStr = "[\\DeLeTe/]"
+
 type LSMTree struct {
+	wg           sync.WaitGroup
 	mu           sync.RWMutex
 	memTables    *memTableStruct
 	immuMemtable []*memTableStruct
 	ssTables     [][]*ssTableStruct
 	path         string
-	maxSSTLevel  int
 	insertC      chan DataModel
 	flushC       chan struct{}
 	compactC     chan struct{}
+	stopC        chan struct{}
 	//readC       chan []byte
-	fileCount  []int
+	//fileCount  []int
 	nextFileID uint64
 	conf       Configuration
 }
 
-func newLSMTree(path string) *LSMTree {
-	return &LSMTree{
+func newLSMTree(name string) *LSMTree {
+	conf := DefaultConfiguration()
+	rootPath := conf.RootPath + name + "/sstable/"
+	var levelDirs []os.DirEntry
+	if _, err := os.Stat(rootPath); err == nil {
+		fmt.Println("Folder already exists!")
+		levelDirs, err = os.ReadDir(rootPath)
+		if err != nil {
+			fmt.Println(err)
+		}
+
+	} else if os.IsNotExist(err) {
+		err := os.MkdirAll(rootPath, 0744)
+		if err != nil {
+			fmt.Println("Creating folder unsucess:", err)
+			return nil
+		}
+	}
+
+	tree := &LSMTree{
 		memTables:    newMemTable(),
 		immuMemtable: make([]*memTableStruct, 0),
 		ssTables:     make([][]*ssTableStruct, 0),
-		path:         path,
-		fileCount:    make([]int, 0),
-		insertC:      make(chan DataModel),
-		flushC:       make(chan struct{}),
-		compactC:     make(chan struct{}),
-		conf:         DefaultConfiguration(),
+		path:         rootPath,
+		//fileCount:    make([]int, 0),
+		insertC:  make(chan DataModel),
+		flushC:   make(chan struct{}),
+		compactC: make(chan struct{}),
+		stopC:    make(chan struct{}),
+		conf:     conf,
 	}
+
+	for level, lvDir := range levelDirs {
+		sstDir := rootPath + lvDir.Name() + "/"
+		ssTFiles, err := os.ReadDir(sstDir)
+		if err != nil {
+			fmt.Println(err)
+		}
+		tree.ssTables = append(tree.ssTables, make([]*ssTableStruct, 0, 1))
+		//tree.fileCount = append(tree.fileCount, 0)
+		tree.ssTables[level] = make([]*ssTableStruct, 0)
+		for _, sst := range ssTFiles {
+			filePath := sstDir + sst.Name()
+			ssTable := newSSTable(filePath, level)
+			if ssTable == nil {
+				fmt.Printf("Skip corrupt file %s", filePath)
+				continue
+			}
+			tree.ssTables[level] = append(tree.ssTables[level], ssTable)
+			//tree.fileCount[level]++
+		}
+	}
+	tree.wg.Add(3)
+	go tree.insertWorker()
+	go tree.flushWorker()
+	go tree.compactWorker()
+	return tree
+}
+
+func (t *LSMTree) close() {
+	close(t.insertC)
+	close(t.stopC)
+
+	t.wg.Wait()
+	t.mu.Lock()
+	for _, level := range t.ssTables {
+		for _, sst := range level {
+			sst.file.Close()
+		}
+	}
+	// immuMemtable := t.memTables
+	// t.immuMemtable = append(t.immuMemtable, immuMemtable)
+	// t.memTables = newMemTable()
+	t.mu.Unlock()
+	//t.handleFlushJobs(t.path + "L0/")
 }
 
 func (t *LSMTree) Get(key []byte) []byte {
@@ -44,6 +110,9 @@ func (t *LSMTree) Get(key []byte) []byte {
 
 	value, err := t.memTables.Get(key)
 	if err == nil {
+		if bytes.Equal(value, []byte(delteStr)) {
+			return nil
+		}
 		return value
 	}
 
@@ -52,6 +121,9 @@ func (t *LSMTree) Get(key []byte) []byte {
 	for i := len(t.immuMemtable) - 1; i >= 0; i-- {
 		value, err = t.immuMemtable[i].Get(key)
 		if err == nil {
+			if bytes.Equal(value, []byte(delteStr)) {
+				return nil
+			}
 			return value
 		}
 	}
@@ -64,6 +136,9 @@ func (t *LSMTree) Get(key []byte) []byte {
 			for _, sst := range sstLevel {
 				value, err = sst.Get(key)
 				if err == nil {
+					if bytes.Equal(value, []byte(delteStr)) {
+						return nil
+					}
 					return value
 				}
 			}
@@ -77,21 +152,18 @@ func (t *LSMTree) Insert(req DataModel) {
 	t.memTables.mu.RLock()
 	size := t.memTables.size
 	t.memTables.mu.RUnlock()
-	if size >= t.conf.SSTableSize {
+	if size >= t.conf.SSTableSize*t.conf.MaxL0Files {
 		t.mu.Lock()
 		immuMemtable := t.memTables
 		t.immuMemtable = append(t.immuMemtable, immuMemtable)
 		t.memTables = newMemTable()
 		t.mu.Unlock()
-		select {
-		case t.flushC <- struct{}{}:
-		default:
-		}
-
+		t.flushC <- struct{}{}
 	}
 }
 
 func (t *LSMTree) insertWorker() {
+	defer t.wg.Done()
 	for req := range t.insertC {
 		t.Insert(req)
 	}
@@ -108,53 +180,106 @@ func (t *LSMTree) flushWorker() {
 		t.appenLevel()
 	}
 
-	for range t.flushC {
-		for {
-			t.mu.Lock()
-			if len(t.immuMemtable) == 0 {
-				t.mu.Unlock()
-				break
+	defer t.wg.Done()
+	for {
+		select {
+		case <-t.flushC:
+			for t.handleFlushJobs(flushPath) {
+				select {
+				case t.compactC <- struct{}{}:
+				case <-t.stopC:
+					t.flushAll(flushPath)
+					return
+				default:
+				}
 			}
-
-			job := t.immuMemtable[0]
-			t.nextFileID++
-			t.mu.Unlock()
-			path := flushPath + formatID(t.nextFileID, 20) + ".sst"
-			t.flush(job, path)
-			// if t.fileCount[0] >= 4 {
-			// 	t.nWayMerge(0)
-			// }
-
-			//t.compactC <- struct{}{}
-			select {
-			case t.compactC <- struct{}{}:
-			default:
-			}
+		case <-t.stopC:
+			t.flushAll(flushPath)
+			return
 		}
 	}
 }
 
+func (t *LSMTree) flushAll(flushPath string) {
+	t.mu.Lock()
+	immuMemtable := t.memTables
+	t.immuMemtable = append(t.immuMemtable, immuMemtable)
+	t.memTables = newMemTable()
+	t.mu.Unlock()
+	for t.handleFlushJobs(flushPath) {
+	}
+}
+
+func (t *LSMTree) handleFlushJobs(flushPath string) bool {
+	t.mu.Lock()
+	if len(t.immuMemtable) == 0 {
+		t.mu.Unlock()
+		return false
+	}
+	job := t.immuMemtable[0]
+	t.immuMemtable[0] = nil
+	t.immuMemtable = t.immuMemtable[1:]
+	t.nextFileID++
+	t.mu.Unlock()
+	path := flushPath + formatID(t.nextFileID, 20) + ".sst"
+	t.flush(job, path)
+	return true
+	// go func(immu *memTableStruct, path string) {
+
+	// }(job, path)
+}
+
 func (t *LSMTree) compactWorker() {
-	//t.nWayMerge(0)
-	for range t.compactC {
-		for i := 0; i < t.conf.MaxLevel; i++ {
-			t.mu.RLock()
-			if len(t.fileCount) == i {
-				t.mu.RUnlock()
-				break
+	defer t.wg.Done()
+	for {
+		select {
+		case <-t.compactC:
+			t.compactHandle()
+		case <-t.stopC:
+			for t.isNeedCompaction() {
+				t.compactHandle()
 			}
-			count := t.fileCount[i]
-			t.mu.RUnlock()
-			if i == 0 && count >= t.conf.MaxL0Files {
-				t.nWayMerge(i, count)
-			} else if count >= t.conf.LevelMultiplier {
-				t.nWayMerge(i, count)
-			}
-			// select {
-			// case t.compactC <- struct{}{}:
-			// default:
-			// }
+			//close(t.compactC)
+			return
 		}
+	}
+
+}
+
+func (t *LSMTree) compactHandle() {
+	for i := 0; i < len(t.ssTables); i++ {
+		if i == t.conf.MaxLevel {
+			return
+		}
+		t.compact(i)
+	}
+}
+
+func (t *LSMTree) isNeedCompaction() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	for i := 0; i < len(t.ssTables); i++ {
+		count := len(t.ssTables[i])
+		if i == 0 && count >= t.conf.MaxL0Files {
+			return true
+		} else if count >= t.conf.LevelMultiplier {
+			return true
+		}
+	}
+
+	return false
+
+}
+
+func (t *LSMTree) compact(level int) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	count := len(t.ssTables[level])
+	
+	if level == 0 && count >= t.conf.MaxL0Files {
+		t.nWayMerge(level, count)
+	} else if count >= t.conf.LevelMultiplier {
+		t.nWayMerge(level, count)
 	}
 }
 
@@ -178,7 +303,7 @@ func (t *LSMTree) getOverlapFiles(level int, n int) []*ssTableStruct {
 
 func (t *LSMTree) appenLevel() {
 	t.mu.Lock()
-	t.fileCount = append(t.fileCount, 0)
+	//t.fileCount = append(t.fileCount, 0)
 	t.ssTables = append(t.ssTables, make([]*ssTableStruct, 0, 1))
 	t.mu.Unlock()
 }
@@ -236,10 +361,14 @@ func (t *LSMTree) nWayMerge(level int, sstLen int) {
 	for i := 0; i < fileLevel; i++ {
 		targetFileSize *= t.conf.LevelMultiplier
 	}
-
+	deleteByte := []byte(delteStr)
 	for len(heap) > 0 {
 		key, value := heap[0].Key, heap[0].Value
-
+		if t.conf.MaxLevel-1 == level {
+			if bytes.Equal(key[4:], deleteByte) {
+				continue
+			}
+		}
 		if writer.size() >= targetFileSize {
 			t.mu.Lock()
 			t.nextFileID++
@@ -313,10 +442,10 @@ func (t *LSMTree) nWayMerge(level int, sstLen int) {
 		newSstNextL = append(newSstNextL, newSSTable(newPath, fileLevel))
 	}
 	t.ssTables[fileLevel] = newSstNextL
-	t.fileCount[fileLevel] = len(t.ssTables[fileLevel])
+	//t.fileCount[fileLevel] = len(t.ssTables[fileLevel])
 
 	t.ssTables[level] = t.ssTables[level][sstLen:]
-	t.fileCount[level] = len(t.ssTables[level])
+	//t.fileCount[level] = len(t.ssTables[level])
 	t.mu.Unlock()
 
 	for _, old := range sstCompact {
@@ -402,7 +531,6 @@ func (t *LSMTree) flush(mem *memTableStruct, path string) {
 	t.mu.Lock()
 	//fmt.Println(t.fileCount[0])
 	t.ssTables[0] = append(t.ssTables[0], newSSTable(path, 0))
-	t.fileCount[0]++
-	t.immuMemtable = t.immuMemtable[1:]
+	//t.fileCount[0]++
 	t.mu.Unlock()
 }

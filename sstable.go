@@ -16,7 +16,7 @@ type ssTableStruct struct {
 	level    int
 	firstKey []byte
 	lastKey  []byte
-	indexes  []*indexBlock
+	indexeOffset  int64
 	refCount int
 	obsolete bool
 }
@@ -27,8 +27,6 @@ func newSSTable(path string, level int) *ssTableStruct {
 		fmt.Println("Error opening SSTable.", err)
 		return nil
 	}
-
-	indexes := make([]*indexBlock, 0)
 
 	info, _ := file.Stat()
 
@@ -53,28 +51,13 @@ func newSSTable(path string, level int) *ssTableStruct {
 	file.ReadAt(lastKey, offset)
 	offset += int64(keyLen)
 
+
 	//fmt.Println(binary.BigEndian.Uint32(lastKey))
-
-	for offset < footer {
-
-		file.ReadAt(buf, offset) //Read first index offset to get first index key length
-		offset += 4
-		keyLen := binary.BigEndian.Uint32(buf)
-		bufIndexKey := make([]byte, keyLen)     //Buffer for read index key
-		file.ReadAt(bufIndexKey, int64(offset)) //Read index key
-		offset += int64(keyLen)
-
-		file.ReadAt(buf, int64(offset)) //Read index offset
-		offset += 4
-
-		indexOffset := binary.BigEndian.Uint32(buf)
-		indexes = append(indexes, &indexBlock{key: bufIndexKey, offset: int64(indexOffset)})
-	}
 
 	return &ssTableStruct{
 		path:     path,
 		file:     file,
-		indexes:  indexes,
+		indexeOffset:  offset,
 		level:    level,
 		firstKey: firstKey,
 		lastKey:  lastKey,
@@ -86,6 +69,32 @@ func (s *ssTableStruct) CloseAndRemove() {
 		s.file.Close()
 		os.Remove(s.path)
 	}
+}
+
+func (s *ssTableStruct) LoadIndex() []*indexBlock{
+	info, _ := s.file.Stat()
+	footer := info.Size() - int64(4)
+	buf := make([]byte, 4)
+	s.file.ReadAt(buf, footer) //Get footer
+	offset := s.indexeOffset
+
+	indexes := make([]*indexBlock, 0)
+	for offset < footer {
+
+		s.file.ReadAt(buf, offset) //Read first index offset to get first index key length
+		offset += 4
+		keyLen := binary.BigEndian.Uint32(buf)
+		bufIndexKey := make([]byte, keyLen)     //Buffer for read index key
+		s.file.ReadAt(bufIndexKey, int64(offset)) //Read index key
+		offset += int64(keyLen)
+
+		s.file.ReadAt(buf, int64(offset)) //Read index offset
+		offset += 4
+
+		indexOffset := binary.BigEndian.Uint32(buf)
+		indexes = append(indexes, &indexBlock{key: bufIndexKey, offset: int64(indexOffset)})
+	}
+	return  indexes
 }
 
 func (s *ssTableStruct) Get(key []byte) ([]byte, error) {
@@ -102,7 +111,7 @@ func (s *ssTableStruct) Get(key []byte) ([]byte, error) {
 		return nil, fmt.Errorf("This key is not in this file.")
 	}
 
-	indexes := s.indexes
+	indexes := s.LoadIndex()
 	file := s.file
 
 	var offset int64 = 0
